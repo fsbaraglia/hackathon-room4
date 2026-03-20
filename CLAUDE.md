@@ -1,79 +1,124 @@
 # CLAUDE.md
+ 
+## Project
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+"The Dashboard Nobody Trusts" — a CLV analytics platform built on AdventureWorks for Postgres.
 
-## What We're Building
+Four stakeholders calculate Customer Lifetime Value four different ways. This project provides
 
-Room 4's hackathon submission for the APAC Claude Code Workshop. We're extending the [inventory-management](https://github.com/beck-source/inventory-management) starter app — a FastAPI backend with in-memory mock data representing a factory inventory system.
+the single source of truth, reconciliation engine, and exploratory tools via MCP.
+ 
+## MCP Server
 
-**Our focus:** [replace with your team's chosen problem / feature area]
+This project exposes an MCP server (`src/server.py`) with 5 tools for data access:
+ 
+| Tool | Purpose |
 
-## Running the Stack
+|------|---------|
+
+| `get_clv(method, customer_id?, limit?)` | Calculate CLV using revenue / gross_margin / net_margin / predictive |
+
+| `reconcile(customer_id?, limit?)` | Compare all 4 methods side-by-side, explain divergence drivers |
+
+| `query_data(sql)` | Run read-only SQL against AdventureWorks (SELECT only) |
+
+| `list_customers(territory_id?, limit?)` | Browse customers with order counts and revenue |
+
+| `what_if(freight_multiplier?, cost_multiplier?, limit?)` | Scenario modeling — adjust costs, see CLV impact |
+ 
+### Running the MCP server
 
 ```bash
-# Backend (from inventory-management/server/)
-cd ../inventory-management/server
-uv run python main.py          # http://localhost:8001
-                               # API docs: http://localhost:8001/docs
 
-# Tests
-uv run pytest                  # all tests
-uv run pytest tests/ -v -k "inventory"   # filter by name
-```
+# Start database first
 
-## Backend Architecture
+docker-compose up -d
+ 
+# Install deps
 
-Single-file FastAPI app (`main.py`) backed by in-memory mock data — no database, restarts reset state.
+pip install mcp psycopg2-binary
+ 
+# The server runs over stdio — Claude Code connects to it directly
 
 ```
-inventory-management/server/
-├── main.py          ← all routes; import point for the whole app
-├── mock_data.py     ← in-memory lists loaded from data/ at startup
-├── models_api.py    ← Pydantic models for request/response validation
-└── data/            ← JSON source files (edit here to change seed data)
+ 
+### Claude Code config (.mcp.json in project root)
+
+```json
+
+{
+
+  "mcpServers": {
+
+    "clv-analytics": {
+
+      "command": "python",
+
+      "args": ["src/server.py"],
+
+      "env": {
+
+        "DB_NAME": "Adventureworks",
+
+        "DB_USER": "postgres",
+
+        "DB_PASS": "postgres",
+
+        "DB_HOST": "localhost",
+
+        "DB_PORT": "5432"
+
+      }
+
+    }
+
+  }
+
+}
+
 ```
+ 
+## Key decisions (see docs/adr-001-clv-definition.md)
 
-**Existing API surface:**
+- "Canonical" CLV for exec reporting = gross margin (actual product economics, no shared-cost allocation)
 
-| Group | Endpoints |
-|-------|-----------|
-| Inventory | `GET /api/inventory`, `GET /api/inventory/{id}` |
-| Orders | `GET /api/orders`, `GET /api/orders/{id}` |
-| Backlog | `GET /api/backlog` |
-| Demand | `GET /api/demand` |
-| Spending | `GET /api/spending/{summary,monthly,categories,transactions}` |
-| Reports | `GET /api/reports/{quarterly,monthly-trends}` |
-| Dashboard | `GET /api/dashboard/summary` |
+- Freight/tax allocated per-order-header, not per-line-item (avoids double-counting)
 
-**Filtering convention:** query params `warehouse`, `category`, `status`, `month` (or quarter e.g. `Q1-2025`). Value `all` skips that filter. Use the existing `apply_filters()` and `filter_by_month()` helpers.
+- Customers with 1 order: lifespan floors to 1 year
 
-**Adding an endpoint:**
-1. Define a Pydantic model in `models_api.py`
-2. Add the route in `main.py`
-3. Re-use `apply_filters()` / `filter_by_month()` for consistency
+- NULL StandardCost products: excluded from margin calcs, flagged in reconciliation
+ 
+## Conventions
 
-## Claude API / Bedrock
+- Python 3.11+, psycopg2 for DB access
 
-```python
-from anthropic import AnthropicBedrock
-client = AnthropicBedrock(aws_region="us-west-2", aws_profile="bootcamp")
-# model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-```
+- All CLV functions return JSON with Decimal→float conversion
 
-AWS login if token expired: `aws login --profile bootcamp`
+- SQL queries use parameterized inputs (no string formatting)
 
-See `../testclaude.py` for the full agent-loop pattern (tool use, `ToolUseBlock` handling, token tracking).
+- Tests: `pytest tests/`
+ 
+## The 4 CLV methods explained
 
-## Our Conventions
+1. **Revenue** (Sales VP): Sum of TotalDue — simple, inflated, ignores costs
 
-- All new endpoints must have a Pydantic `response_model`
-- Filter on copies — never mutate the global mock-data lists
-- New tools added to Claude must have a corresponding entry in `TOOL_REGISTRY`
-- [Add any other conventions your team decides on]
+2. **Gross margin** (Finance): LineTotal minus (StandardCost × Qty) — real product economics
 
-## Submission Checklist
+3. **Net margin** (CFO): Gross margin minus freight and tax — most conservative
 
-- [ ] `README.md` — problem, solution, Claude Code usage, what's next
-- [ ] `presentation.html` — self-contained slide (inline CSS/JS, no external deps)
-- [ ] `CLAUDE.md` — this file, kept up to date as we build
-- [ ] PR open to `apac-cc-workshop-acn/hackathon/submissions/room4_<name>/` before 15:15 SGT
+4. **Predictive** (Data Sci): (orders / lifespan) × AOV × lifespan — forward-looking, noisy for small samples
+ 
+## What to ask me (example prompts)
+
+- "Use the reconcile tool to find the top 10 customers with the biggest CLV disagreement"
+
+- "Get the CLV for customer 29825 using all 4 methods"
+
+- "What if we reduced freight costs by 30%? How does that change the top customer rankings?"
+
+- "Query the data to find which territories have the most high-value customers"
+ 
+Lests include in the Claude.md
+ 
+That we would be using 3 agents dev, test data, and also that we would be leveraging existing reporting capabilities in the client 
+ 
